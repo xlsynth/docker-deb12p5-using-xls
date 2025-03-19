@@ -3,7 +3,7 @@ FROM debian:12.5-slim
 ARG XLSYNTH_VERSION=v0.0.173
 ENV XLSYNTH_VERSION=${XLSYNTH_VERSION}
 
-ARG XLSYNTH_DRIVER_VERSION=0.0.97
+ARG XLSYNTH_DRIVER_VERSION=0.0.99
 ENV XLSYNTH_DRIVER_VERSION=${XLSYNTH_DRIVER_VERSION}
 
 # Install dependencies: python3, pip, wget
@@ -32,9 +32,6 @@ RUN ldd ${XLSYNTH_VERSION}/libxls-rocky8.so
 # For debug use: print out the GLIBC version dependencies for the shared library.
 RUN strings ${XLSYNTH_VERSION}/libxls-rocky8.so 2>&1 | grep 'GLIBC' | grep "\."
 
-# Place the shared library in a common library directory so it will be found by binaries.
-RUN ln -s $(realpath ${XLSYNTH_VERSION}/libxls-rocky8.so) /usr/local/lib/libxls-${XLSYNTH_VERSION}-ubuntu2004.so
-
 # Tell the OS a new library is there.
 RUN ldconfig
 
@@ -50,8 +47,34 @@ ENV XLSYNTH_TOOLS=latest/
 # Add Cargo's bin directory to the PATH
 ENV PATH="/root/.cargo/bin:$PATH"
 
+# Create a temporary Cargo project to pre-fetch the xlsynth-driver dependency
+RUN mkdir temp-fetch && \
+    echo '[package]' > temp-fetch/Cargo.toml && \
+    echo 'name = "temp-fetch"' >> temp-fetch/Cargo.toml && \
+    echo 'version = "0.1.0"' >> temp-fetch/Cargo.toml && \
+    echo 'edition = "2021"' >> temp-fetch/Cargo.toml && \
+    echo '' >> temp-fetch/Cargo.toml && \
+    echo '[dependencies]' >> temp-fetch/Cargo.toml && \
+    echo "xlsynth-driver = \"${XLSYNTH_DRIVER_VERSION}\"" >> temp-fetch/Cargo.toml && \
+    mkdir -p temp-fetch/src && \
+    echo "fn main() {}" > temp-fetch/src/main.rs && \
+    cd temp-fetch && \
+    cargo fetch && \
+    cd .. && \
+    rm -rf temp-fetch
+
+# Set up env vars for the driver build.
+ENV XLS_DSO_PATH=/${XLSYNTH_VERSION}/libxls-rocky8.so
+ENV DSLX_STDLIB_PATH=/${XLSYNTH_VERSION}/xls/dslx/stdlib/
+ENV LD_LIBRARY_PATH=/${XLSYNTH_VERSION}:$LD_LIBRARY_PATH
+
+RUN ls -al /${XLSYNTH_VERSION}
+RUN ls -al /${XLSYNTH_VERSION}/libxls-rocky8.so
+
 # Install xlsynth-driver using Cargo.
-RUN cargo install xlsynth-driver --version ${XLSYNTH_DRIVER_VERSION}
+# We pass the --network=none flag to cut off network access for the build.
+# We pass --offline to use the pre-fetched dependencies and not query crates.io.
+RUN --network=none cargo install xlsynth-driver --version ${XLSYNTH_DRIVER_VERSION} --offline
 
 # Verify that xlsynth-driver works by showing its version.
 RUN xlsynth-driver version
@@ -75,17 +98,14 @@ RUN echo "[toolchain]" > xlsynth-toolchain.toml
 RUN echo "dslx_stdlib_path = \"${XLSYNTH_TOOLS}/xls/dslx/stdlib/\"" >> xlsynth-toolchain.toml
 
 # Convert the DSLX code into IR.
-RUN xlsynth-driver --toolchain xlsynth-toolchain.toml \
-    dslx2ir --dslx_input_file /tmp/my_add.x --dslx_top f > /tmp/my_add.ir
+RUN xlsynth-driver dslx2ir --dslx_input_file /tmp/my_add.x --dslx_top f > /tmp/my_add.ir
 RUN cat /tmp/my_add.ir
 
 # Optimize the IR.
-RUN xlsynth-driver --toolchain xlsynth-toolchain.toml \
-    ir2opt /tmp/my_add.ir --top __my_add__f > /tmp/my_add.opt.ir
+RUN xlsynth-driver ir2opt /tmp/my_add.ir --top __my_add__f > /tmp/my_add.opt.ir
 RUN cat /tmp/my_add.opt.ir
 
 # Show the JSON output "summary stats" for the gate mapping.
-RUN xlsynth-driver --toolchain xlsynth-toolchain.toml \
-    ir2gates /tmp/my_add.opt.ir --quiet=true
+RUN xlsynth-driver ir2gates /tmp/my_add.opt.ir --quiet=true
 
 CMD ["bash"]
