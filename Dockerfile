@@ -3,7 +3,7 @@ FROM debian:12.5-slim
 ARG XLSYNTH_VERSION=v0.0.173
 ENV XLSYNTH_VERSION=${XLSYNTH_VERSION}
 
-ARG XLSYNTH_DRIVER_VERSION=0.0.99
+ARG XLSYNTH_DRIVER_VERSION=0.0.100
 ENV XLSYNTH_DRIVER_VERSION=${XLSYNTH_DRIVER_VERSION}
 
 # Install dependencies: python3, pip, wget
@@ -107,5 +107,17 @@ RUN cat /tmp/my_add.opt.ir
 
 # Show the JSON output "summary stats" for the gate mapping.
 RUN xlsynth-driver ir2gates /tmp/my_add.opt.ir --quiet=true
+
+# Now do the above sequence to show how many gates are in the
+# apfloat f32 adder.
+RUN echo "import float32;" > /tmp/apfloat_f32_adder.x
+RUN echo "type F32 = float32::F32;" >> /tmp/apfloat_f32_adder.x
+RUN echo "fn my_f32_add(a: F32, b: F32) -> F32 { float32::add(a, b) }" >> /tmp/apfloat_f32_adder.x
+
+# Convert the .x file to optimized IR.
+RUN xlsynth-driver dslx2ir --dslx_input_file /tmp/apfloat_f32_adder.x --dslx_top my_f32_add --opt=true > /tmp/apfloat_f32_adder.opt.ir
+
+# Show the JSON output "summary stats" for the gate mapping.
+RUN xlsynth-driver ir2gates /tmp/apfloat_f32_adder.opt.ir --quiet=true
 
 CMD ["bash"]
