@@ -1,9 +1,9 @@
 FROM debian:12.5-slim
 
-ARG XLSYNTH_VERSION=v0.0.173
+ARG XLSYNTH_VERSION=v0.0.181
 ENV XLSYNTH_VERSION=${XLSYNTH_VERSION}
 
-ARG XLSYNTH_DRIVER_VERSION=0.0.100
+ARG XLSYNTH_DRIVER_VERSION=0.0.137
 ENV XLSYNTH_DRIVER_VERSION=${XLSYNTH_DRIVER_VERSION}
 
 # Install dependencies: python3, pip, wget
@@ -47,7 +47,7 @@ ENV XLSYNTH_TOOLS=latest/
 # Add Cargo's bin directory to the PATH
 ENV PATH="/root/.cargo/bin:$PATH"
 
-# Create a temporary Cargo project to pre-fetch the xlsynth-driver dependency
+# Create a temporary Cargo project to pre-fetch the xlsynth-driver dependency with the with-boolector-system feature
 RUN mkdir temp-fetch && \
     echo '[package]' > temp-fetch/Cargo.toml && \
     echo 'name = "temp-fetch"' >> temp-fetch/Cargo.toml && \
@@ -55,7 +55,7 @@ RUN mkdir temp-fetch && \
     echo 'edition = "2021"' >> temp-fetch/Cargo.toml && \
     echo '' >> temp-fetch/Cargo.toml && \
     echo '[dependencies]' >> temp-fetch/Cargo.toml && \
-    echo "xlsynth-driver = \"${XLSYNTH_DRIVER_VERSION}\"" >> temp-fetch/Cargo.toml && \
+    echo "xlsynth-driver = { version = \"${XLSYNTH_DRIVER_VERSION}\", features = [\"with-boolector-system\"] }" >> temp-fetch/Cargo.toml && \
     mkdir -p temp-fetch/src && \
     echo "fn main() {}" > temp-fetch/src/main.rs && \
     cd temp-fetch && \
@@ -71,10 +71,15 @@ ENV LD_LIBRARY_PATH=/${XLSYNTH_VERSION}:$LD_LIBRARY_PATH
 RUN ls -al /${XLSYNTH_VERSION}
 RUN ls -al /${XLSYNTH_VERSION}/libxls-rocky8.so
 
+RUN wget -O /usr/lib/libboolector.so https://github.com/xlsynth/boolector-build/releases/download/boolector-debian10-171b2783200bf9f7636f3e595587ee822a0a6d07/libboolector-debian10.so
+
 # Install xlsynth-driver using Cargo.
 # We pass the --network=none flag to cut off network access for the build.
 # We pass --offline to use the pre-fetched dependencies and not query crates.io.
-RUN --network=none cargo install xlsynth-driver --version ${XLSYNTH_DRIVER_VERSION} --offline
+RUN --network=none cargo install xlsynth-driver --version ${XLSYNTH_DRIVER_VERSION} --offline --features with-boolector-system
+#RUN apt-get install -y cmake
+#RUN cargo install xlsynth-driver --version ${XLSYNTH_DRIVER_VERSION} --features with-boolector
+
 
 # Verify that xlsynth-driver works by showing its version.
 RUN xlsynth-driver version
@@ -119,5 +124,20 @@ RUN xlsynth-driver dslx2ir --dslx_input_file /tmp/apfloat_f32_adder.x --dslx_top
 
 # Show the JSON output "summary stats" for the gate mapping.
 RUN xlsynth-driver ir2gates /tmp/apfloat_f32_adder.opt.ir --quiet=true
+
+# -- IR equivalence example
+RUN echo "package id_convoluted" > /tmp/id-convoluted.ir
+RUN echo "fn id(x: bits[32] id=1) -> bits[32] {" >> /tmp/id-convoluted.ir
+RUN echo "  y: bits[32] = add(x, x, id=2)" >> /tmp/id-convoluted.ir
+RUN echo "  ret z: bits[32] = sub(y, x, id=3)" >> /tmp/id-convoluted.ir
+RUN echo "}" >> /tmp/id-convoluted.ir
+
+RUN echo "package id_simple" > /tmp/id-simple.ir
+RUN echo "fn id(x: bits[32] id=1) -> bits[32] {" >> /tmp/id-simple.ir
+RUN echo "  ret z: bits[32] = identity(x, id=2)" >> /tmp/id-simple.ir
+RUN echo "}" >> /tmp/id-simple.ir
+
+RUN xlsynth-driver ir-equiv --boolector=true /tmp/id-convoluted.ir /tmp/id-simple.ir --top id > /tmp/id-equiv.txt
+RUN cat /tmp/id-equiv.txt
 
 CMD ["bash"]
